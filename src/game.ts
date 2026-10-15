@@ -174,7 +174,8 @@ export class Game {
       const slope = dist < ROAD_HALF_WIDTH + 2 ? hill.y * alignment : 0
       this.body.applyImpulse({ x: forward.x * force * mass * dt, y: drive * slope * mass * dt, z: forward.z * force * mass * dt }, true)
       this.body.applyImpulse({ x: -side.x * lateral * mass * Math.min(1, grip * 9 * dt), y: 0, z: -side.z * lateral * mass * Math.min(1, grip * 9 * dt) }, true)
-      const steerRate = c.steer * (1.05 + Math.min(1, this.speed / 6) * 1.25) * (c.handbrake ? 1.2 : 1) * (forwardSpeed < -.8 ? -1 : 1)
+      // In the chase view, positive Y rotation moves the nose left on screen.
+      const steerRate = -c.steer * (1.05 + Math.min(1, this.speed / 6) * 1.25) * (c.handbrake ? 1.2 : 1) * (forwardSpeed < -.8 ? -1 : 1)
       this.body.setAngvel({ x: 0, y: steerRate, z: 0 }, true)
     }
     if (pos.y < center.y - 7 || Math.abs(pos.x) > 115 || Math.abs(pos.z) > 100) this.reset()
