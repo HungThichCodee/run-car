@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import RAPIER from '@dimforge/rapier3d-compat'
-import { buildTrack, point, progress, tangentAngle, ROAD_HALF_WIDTH, RX, RZ } from './track'
+import { buildTrack, point, progress, tangent, tangentAngle, ROAD_HALF_WIDTH } from './track'
 
 export type Controls = { steer: number, throttle: number, brake: number, handbrake: boolean }
 export type CarState = { x: number, y: number, z: number, yaw: number, speed: number, lap: number, t: number }
@@ -9,6 +9,7 @@ type RemoteCar = { mesh: THREE.Group, state: RemoteState, stamp: number }
 
 function carModel(color: number) {
   const car = new THREE.Group()
+  car.rotation.order = 'YXZ'
   const paint = new THREE.MeshStandardMaterial({ color, metalness: .42, roughness: .31 })
   const shell = new THREE.Mesh(new THREE.BoxGeometry(1.8, .55, 3.45), paint)
   shell.position.y = .55; shell.castShadow = true; car.add(shell)
@@ -33,7 +34,7 @@ function carModel(color: number) {
 export class Game {
   private scene = new THREE.Scene()
   private renderer: THREE.WebGLRenderer
-  private camera = new THREE.PerspectiveCamera(66, 1, .1, 350)
+  private camera = new THREE.PerspectiveCamera(66, 1, .1, 450)
   private world!: RAPIER.World
   private body!: RAPIER.RigidBody
   private model!: ReturnType<typeof carModel>
@@ -41,6 +42,7 @@ export class Game {
   private remotes = new Map<string, RemoteCar>()
   private clock = new THREE.Clock()
   private frame = 0
+  private accumulator = 0
   private raf = 0
   private disposed = false
   private onResize = () => this.resize()
@@ -76,7 +78,7 @@ export class Game {
       if (this.disposed) return
       this.world = new RAPIER.World({ x: 0, y: -18, z: 0 })
       this.scene.background = new THREE.Color(0x89bce2)
-      this.scene.fog = new THREE.Fog(0x89bce2, 75, 200)
+      this.scene.fog = new THREE.Fog(0x89bce2, 105, 285)
       this.scene.add(new THREE.HemisphereLight(0xffffff, 0x456252, 2.2))
       const sun = new THREE.DirectionalLight(0xfff2d4, 2.4)
       sun.position.set(-30, 65, 25); sun.castShadow = true
@@ -86,7 +88,8 @@ export class Game {
       this.scene.add(sun)
       this.track = buildTrack(this.scene, this.world)
       this.model = carModel(0x36d8ca); this.scene.add(this.model.car)
-      this.body = this.world.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(RX, .85, -2).setLinearDamping(.13).setAngularDamping(2).setCcdEnabled(true))
+      const spawn = point(0)
+      this.body = this.world.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(spawn.x, spawn.y + .85, spawn.z).setLinearDamping(.13).setAngularDamping(2).setCcdEnabled(true))
       this.body.setEnabledRotations(false, true, false, true)
       this.world.createCollider(RAPIER.ColliderDesc.cuboid(.85, .7, 1.55).setTranslation(0, .3, 0).setFriction(1.25).setRestitution(.12).setDensity(1.5), this.body)
       this.reset()
@@ -114,7 +117,7 @@ export class Game {
     if (!this.body) return
     const p = point(this.lastLapAngle, 0)
     const yaw = tangentAngle(this.lastLapAngle)
-    this.body.setTranslation({ x: p.x, y: .85, z: p.z }, true)
+    this.body.setTranslation({ x: p.x, y: p.y + .85, z: p.z }, true)
     this.body.setRotation({ x: 0, y: Math.sin(yaw / 2), z: 0, w: Math.cos(yaw / 2) }, true)
     this.body.setLinvel({ x: 0, y: 0, z: 0 }, true)
     this.body.setAngvel({ x: 0, y: 0, z: 0 }, true)
@@ -160,15 +163,21 @@ export class Game {
       this.model.wheels[i].rotation.x -= forwardSpeed * dt / .38
     }
     if (grounded) {
-      const engine = c.throttle * (this.slow ? 35 : 64)
-      const braking = c.brake * Math.sign(forwardSpeed) * 95
-      const drag = forwardSpeed * Math.abs(forwardSpeed) * .12
-      this.body.applyImpulse({ x: forward.x * (engine - braking - drag) * mass * dt, y: 0, z: forward.z * (engine - braking - drag) * mass * dt }, true)
+      // The brake becomes reverse below walking speed, so S/down can back out of a wall.
+      let drive = c.throttle * (this.slow ? 58 : 105)
+      if (c.brake) drive -= c.brake * (forwardSpeed > 1.5 ? 135 : 70)
+      if (forwardSpeed > 29 && drive > 0 || forwardSpeed < -13 && drive < 0) drive = 0
+      const drag = forwardSpeed * Math.abs(forwardSpeed) * .14
+      const force = drive - drag
+      const hill = tangent(angle)
+      const alignment = forward.x * hill.x + forward.z * hill.z
+      const slope = dist < ROAD_HALF_WIDTH + 2 ? hill.y * alignment : 0
+      this.body.applyImpulse({ x: forward.x * force * mass * dt, y: drive * slope * mass * dt, z: forward.z * force * mass * dt }, true)
       this.body.applyImpulse({ x: -side.x * lateral * mass * Math.min(1, grip * 9 * dt), y: 0, z: -side.z * lateral * mass * Math.min(1, grip * 9 * dt) }, true)
-      const steerRate = c.steer * Math.min(1, this.speed / 5) * (c.handbrake ? 1.8 : 1.25) * (forwardSpeed < -1 ? -1 : 1)
+      const steerRate = c.steer * (1.05 + Math.min(1, this.speed / 6) * 1.25) * (c.handbrake ? 1.2 : 1) * (forwardSpeed < -.8 ? -1 : 1)
       this.body.setAngvel({ x: 0, y: steerRate, z: 0 }, true)
     }
-    if (pos.y < -3 || Math.abs(pos.x) > 105 || Math.abs(pos.z) > 85) this.reset()
+    if (pos.y < center.y - 7 || Math.abs(pos.x) > 115 || Math.abs(pos.z) > 100) this.reset()
     if (dist > ROAD_HALF_WIDTH + 6 && this.speed < 1.5) this.status = 'Ra khỏi đường — nhấn R để trở lại'
     else this.status = this.slippery ? 'Đường trơn' : this.slow ? 'Vùng giảm tốc' : 'Đang đua'
     if (this.raceStarted && !this.finished && dist < ROAD_HALF_WIDTH + 1) {
@@ -185,16 +194,26 @@ export class Game {
   private loop = () => {
     if (this.disposed) return
     this.raf = requestAnimationFrame(this.loop)
-    const dt = Math.min(this.clock.getDelta(), .04)
+    const dt = Math.min(this.clock.getDelta(), .08)
     if (this.body) {
-      this.physics(dt)
-      this.track.update(this.clock.elapsedTime)
       this.world.timestep = 1 / 60
-      this.world.step()
+      this.accumulator += dt
+      let steps = 0
+      while (this.accumulator >= 1 / 60 && steps < 4) {
+        this.physics(1 / 60)
+        this.track.update(this.clock.elapsedTime)
+        this.world.step()
+        this.accumulator -= 1 / 60
+        steps++
+      }
+      if (steps === 4) this.accumulator = 0
       const p = this.body.translation(), q = this.body.rotation()
       this.model.car.position.set(p.x, p.y, p.z)
-      this.model.car.quaternion.set(q.x, q.y, q.z, q.w)
       const yaw = 2 * Math.atan2(q.y, q.w)
+      const angle = progress(p.x, p.z), trackDirection = tangent(angle)
+      const facing = Math.sin(yaw) * trackDirection.x + Math.cos(yaw) * trackDirection.z
+      const pitch = Math.abs(p.y - point(angle).y) < 3 ? -Math.asin(trackDirection.y) * facing : 0
+      this.model.car.rotation.set(pitch, yaw, 0)
       const desired = new THREE.Vector3(p.x - Math.sin(yaw) * 10, p.y + 6, p.z - Math.cos(yaw) * 10)
       this.camera.position.lerp(desired, Math.min(1, dt * 4))
       this.camera.lookAt(p.x, p.y + 1, p.z)
@@ -203,6 +222,8 @@ export class Game {
         if (now - remote.stamp > 12000) { this.scene.remove(remote.mesh); this.remotes.delete(id); continue }
         remote.mesh.position.lerp(new THREE.Vector3(remote.state.x, remote.state.y, remote.state.z), .18)
         remote.mesh.rotation.y += (THREE.MathUtils.euclideanModulo(remote.state.yaw - remote.mesh.rotation.y + Math.PI, Math.PI * 2) - Math.PI) * .18
+        const remoteAngle = progress(remote.state.x, remote.state.z), remoteDirection = tangent(remoteAngle)
+        remote.mesh.rotation.x = -Math.asin(remoteDirection.y) * (Math.sin(remote.mesh.rotation.y) * remoteDirection.x + Math.cos(remote.mesh.rotation.y) * remoteDirection.z)
       }
       if (++this.frame % 3 === 0) this.onUpdate?.({ x: p.x, y: p.y, z: p.z, yaw, speed: this.speed, lap: this.laps, t: now }, { speed: this.speed * 3.6, laps: this.laps, checkpoint: this.checkpoint, time: this.raceStarted ? (now - this.startedAt) / 1000 : 0, status: this.status, finished: this.finished })
     }

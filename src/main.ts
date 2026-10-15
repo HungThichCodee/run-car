@@ -43,7 +43,13 @@ function renderPlayers(players: Player[]) {
     const ready = document.createElement('span'); ready.textContent = p.ready ? 'Sẵn sàng' : 'Đang chờ'
     div.append(name, ready); list.append(div)
   }
-  el<HTMLButtonElement>('startRace').disabled = !room?.host || players.some(p => !p.ready)
+  const pending = players.filter(p => !p.ready)
+  const me = players.find(p => p.id === room?.id)
+  el<HTMLButtonElement>('startRace').disabled = !room?.host || players.length === 0 || pending.length > 0
+  el('ready').textContent = me?.ready ? 'Hủy sẵn sàng' : 'Sẵn sàng'
+  el('lobbyHelp').textContent = players.length === 0 ? 'Đang đồng bộ người chơi…' : room?.host
+    ? pending.length ? 'Chờ ' + pending.map(p => p.name).join(', ') + ' bấm “Sẵn sàng”.' : 'Mọi người đã sẵn sàng. Bấm “Bắt đầu” để xuất phát.'
+    : me?.ready ? 'Đã sẵn sàng. Chờ host bắt đầu cuộc đua.' : 'Bấm “Sẵn sàng” để host có thể bắt đầu.'
   leaderboard()
 }
 function attachRoom(next: Room) {
@@ -67,6 +73,7 @@ async function enterRoom(host: boolean) {
     el<HTMLButtonElement>('startRace').hidden = !host
     el<HTMLButtonElement>('ready').hidden = host
     el<HTMLInputElement>('roomCode').value = code
+    renderPlayers(next.players)
     toast('Chia sẻ mã phòng: ' + code)
   } catch (error) {
     setConnection('Không thể vào phòng')
@@ -76,12 +83,22 @@ async function enterRoom(host: boolean) {
 }
 async function openPair() {
   if (!configured) { toast('Cần cấu hình Supabase để ghép điện thoại'); return }
-  pairing?.close(); pairing = new Pairing()
+  await pairing?.close(); pairing = new Pairing()
   pairing.onStatus = msg => { el('pairStatus').textContent = msg; toast(msg) }
   pairing.onControls = c => game?.setPhone(c)
-  pairing.onConnected = () => { el('pairStatus').textContent = 'Điện thoại đã kết nối'; toast('Điện thoại đã kết nối') }
+  pairing.onConnected = () => {
+    el('pairStatus').textContent = 'Điện thoại đã kết nối. Cửa sổ QR sẽ tự ẩn.'
+    el('disconnectPhone').hidden = false
+    toast('Điện thoại đã kết nối — dùng điện thoại để lái')
+    window.setTimeout(() => el('pairDialog').hidden = true, 1500)
+  }
   el('pairDialog').hidden = false; el('pairStatus').textContent = 'Đang tạo mã…'
-  try { await QRCode.toCanvas(el<HTMLCanvasElement>('qr'), await pairing.host(), { width: 238, margin: 2, errorCorrectionLevel: 'M' }); el('pairStatus').textContent = 'Quét để ghép nối' }
+  try {
+    const link = await pairing.host()
+    el<HTMLAnchorElement>('pairLink').href = link
+    await QRCode.toCanvas(el<HTMLCanvasElement>('qr'), link, { width: 238, margin: 2, errorCorrectionLevel: 'M' })
+    el('pairStatus').textContent = 'Quét để ghép nối'
+  }
   catch (error) { el('pairStatus').textContent = 'Không tạo được QR: ' + String(error) }
 }
 function bindHold(button: HTMLElement, down: () => void, up: () => void) {
@@ -107,17 +124,33 @@ async function setupGame() {
   try { await game.init() } catch (error) { toast('Không thể khởi động game: ' + String(error)); return }
   el('openMenu').onclick = () => showMenu(true)
   el('closeMenu').onclick = () => showMenu(false)
-  el('solo').onclick = () => { game?.startRace(); showMenu(false); toast('Đua 3 vòng. Nhấn R nếu bị kẹt.') }
+  el('solo').onclick = () => { raceFinished = false; game?.startRace(); showMenu(false); toast('Đua 3 vòng. Nhấn R nếu bị kẹt.') }
   el('createRoom').onclick = () => enterRoom(true)
   el('joinRoom').onclick = () => enterRoom(false)
   el('ready').onclick = async () => {
     const current = room?.players.find(p => p.id === room?.id)
-    await room?.ready(!current?.ready)
+    try { await room?.ready(!current?.ready) }
+    catch (error) { toast('Không đổi được trạng thái: ' + String(error)) }
   }
-  el('startRace').onclick = () => { if (!room?.start()) toast('Chờ mọi người sẵn sàng') }
-  el('leaveRoom').onclick = async () => { await room?.leave(); room = null; el('lobby').hidden = true; setConnection(configured ? 'Đã thoát phòng' : 'Chưa cấu hình multiplayer'); leaderboard() }
+  el('startRace').onclick = async () => {
+    const button = el<HTMLButtonElement>('startRace')
+    button.disabled = true
+    try { if (!await room?.start()) toast('Chờ mọi người sẵn sàng') }
+    catch (error) { toast('Không bắt đầu được: ' + String(error)) }
+    finally { if (room) renderPlayers(room.players) }
+  }
+  el('copyRoom').onclick = async () => {
+    try { await navigator.clipboard.writeText(room?.code || ''); toast('Đã sao chép mã phòng') }
+    catch { toast('Không sao chép được. Hãy chọn mã phòng ở trên.') }
+  }
+  el('leaveRoom').onclick = async () => { await room?.leave(); room = null; opponents.clear(); el('lobby').hidden = true; setConnection(configured ? 'Đã thoát phòng' : 'Chưa cấu hình multiplayer'); leaderboard() }
   el('pair').onclick = openPair
-  el('closePair').onclick = () => { el('pairDialog').hidden = true; pairing?.close() }
+  el('closePair').onclick = () => el('pairDialog').hidden = true
+  el('hidePair').onclick = () => el('pairDialog').hidden = true
+  el('disconnectPhone').onclick = async () => {
+    await pairing?.close(); pairing = null; game?.setPhone(null)
+    el('disconnectPhone').hidden = true; toast('Đã ngắt điện thoại')
+  }
   const touch: Controls = { ...empty }
   const update = () => game?.setTouch(touch)
   bindHold(el('left'), () => { touch.steer = -1; update() }, () => { touch.steer = 0; update() })

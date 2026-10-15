@@ -48,6 +48,7 @@ export class Room {
   private lastSend = 0
   private lastSeen = new Map<string, number>()
   private retryTimer = 0
+  private raceEpoch = 0
   private client?: SupabaseClient
   private gone = false
   players: Player[] = []
@@ -64,7 +65,13 @@ export class Room {
     this.channel = this.client.channel('game:room:' + this.code, { config: { private: true, presence: { key: this.id }, broadcast: { self: false } } })
     this.channel.on('presence', { event: 'sync' }, () => this.sync())
     this.channel.on('broadcast', { event: 'signal' }, ({ payload }) => this.signal(payload as Signal))
-    this.channel.on('broadcast', { event: 'start' }, ({ payload }) => { if (payload?.host === this.hostId()) this.onStart?.() })
+    this.channel.on('broadcast', { event: 'start' }, ({ payload }) => {
+      if (payload?.host !== this.hostId() || !Number.isFinite(payload?.startAt)) return
+      const startAt = Number(payload.startAt)
+      if (startAt <= this.raceEpoch) return
+      this.raceEpoch = startAt
+      window.setTimeout(() => { if (!this.gone) this.onStart?.() }, Math.min(1600, Math.max(0, startAt - Date.now())))
+    })
     this.channel.on('broadcast', { event: 'finish' }, ({ payload }) => {
       if (typeof payload?.id === 'string' && Number.isFinite(payload?.time)) this.onFinish?.(payload.id, payload.time)
     })
@@ -109,12 +116,18 @@ export class Room {
     for (const id of old) if (id !== this.id) this.drop(id)
   }
   async ready(value: boolean) {
-    await this.channel?.track({ id: this.id, name: this.name.slice(0, 24), ready: value, host: this.host, color: this.color })
+    const result = await this.channel?.track({ id: this.id, name: this.name.slice(0, 24), ready: value, host: this.host, color: this.color })
+    if (result !== 'ok') throw new Error('Không cập nhật được trạng thái sẵn sàng')
   }
-  start() {
+  async start() {
     if (!this.host || this.players.length < 1 || this.players.some(p => !p.ready)) return false
-    this.channel?.send({ type: 'broadcast', event: 'start', payload: { host: this.id } })
-    this.onStart?.(); return true
+    if (!this.channel) throw new Error('Đã mất kết nối phòng')
+    const startAt = Date.now() + 1600
+    const result = await this.channel.send({ type: 'broadcast', event: 'start', payload: { host: this.id, startAt } })
+    if (result !== 'ok') throw new Error('Không gửi được lệnh bắt đầu qua Realtime')
+    this.raceEpoch = startAt
+    window.setTimeout(() => { if (!this.gone) this.onStart?.() }, Math.max(0, startAt - Date.now()))
+    return true
   }
   finish(time: number) { this.channel?.send({ type: 'broadcast', event: 'finish', payload: { id: this.id, time } }) }
   private peer(id: string) {
@@ -206,6 +219,9 @@ export class Pairing {
   private consumed = false
   private pendingIce: RTCIceCandidateInit[] = []
   private connectTimeout = 0
+  private controlTimer = 0
+  private lastControl = 0
+  private controlLost = false
   onStatus?: (text: string) => void
   onControls?: (controls: Controls | null) => void
   onConnected?: () => void
@@ -276,11 +292,30 @@ export class Pairing {
     }, 20000)
   }
   private bindData(data: RTCDataChannel) {
-    data.onopen = () => { clearTimeout(this.connectTimeout); this.onStatus?.('Điện thoại đã kết nối'); this.onConnected?.() }
-    data.onclose = () => { this.onStatus?.('Mất kết nối điện thoại. Dùng bàn phím hoặc nút cảm ứng.'); this.onControls?.(null) }
+    data.onopen = () => {
+      clearTimeout(this.connectTimeout); this.lastControl = Date.now()
+      this.controlLost = false
+      clearInterval(this.controlTimer)
+      this.controlTimer = window.setInterval(() => {
+        if (!this.controlLost && Date.now() - this.lastControl > 900) {
+          this.controlLost = true
+          this.onControls?.(null)
+          this.onStatus?.('Không nhận điều khiển từ điện thoại. Đang chờ kết nối lại…')
+        }
+      }, 300)
+      this.onStatus?.('Điện thoại đã kết nối'); this.onConnected?.()
+    }
+    data.onclose = () => { clearInterval(this.controlTimer); this.onStatus?.('Mất kết nối điện thoại. Dùng bàn phím hoặc nút cảm ứng.'); this.onControls?.(null) }
     data.onmessage = e => {
       if (typeof e.data !== 'string' || e.data.length > 200) return
-      try { const v = JSON.parse(e.data); if (validControls(v)) this.onControls?.(v) } catch { /* Ignore malformed controls. */ }
+      try {
+        const v = JSON.parse(e.data)
+        if (validControls(v)) {
+          this.lastControl = Date.now()
+          if (this.controlLost) { this.controlLost = false; this.onStatus?.('Điện thoại đã kết nối lại') }
+          this.onControls?.(v)
+        }
+      } catch { /* Ignore malformed controls. */ }
     }
     this.peer!.onconnectionstatechange = () => {
       if (this.peer?.connectionState === 'failed') { this.onStatus?.('P2P thất bại. Thử lại hoặc dùng bàn phím/nút cảm ứng.'); this.onControls?.(null) }
@@ -288,7 +323,7 @@ export class Pairing {
   }
   sendControls(value: Controls) { if (this.data?.readyState === 'open' && validControls(value)) this.data.send(JSON.stringify(value)) }
   async close() {
-    clearTimeout(this.timer); clearTimeout(this.connectTimeout); this.timer = 0
+    clearTimeout(this.timer); clearTimeout(this.connectTimeout); clearInterval(this.controlTimer); this.timer = 0
     this.pendingIce = []
     this.data?.close(); this.peer?.close(); this.peer = undefined
     if (this.channel && this.client) await this.client.removeChannel(this.channel)
