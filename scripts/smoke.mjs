@@ -1,7 +1,7 @@
 // Browser smoke test for the built Pages site. The online part uses the
 // project's public Supabase client variables and three real browser tabs.
 import { spawn } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -14,6 +14,7 @@ if (!browserBinary) throw new Error('Chromium/Chrome is required for the smoke t
 const profile = mkdtempSync(join(tmpdir(), 'run-car-smoke-'))
 let preview, browser
 const tabs = []
+let stage = 'starting browser'
 
 class Tab {
   constructor(ws) {
@@ -101,6 +102,7 @@ async function main() {
   }
   if (!debugPort) throw new Error('Chrome DevTools did not start')
   const host = await newTab(debugPort, site)
+  stage = 'loading solo game'
   await host.wait("document.querySelector('#game canvas') !== null", 30000)
   await host.click('#solo')
   await host.wait("document.querySelector('#menu').hidden")
@@ -108,19 +110,23 @@ async function main() {
   if (host.exceptions.length) throw new Error('Browser exception: ' + host.exceptions.join('; '))
   if (!online) { console.log('SKIP: multiplayer and phone pairing (Supabase variables absent)'); return }
 
+  stage = 'creating room'
   await host.click('#openMenu')
   await host.click('#createRoom')
   await host.wait("document.querySelector('#lobby').hidden === false", 30000)
   const code = await host.evaluate("document.querySelector('#roomLabel').textContent")
   if (!/^[0-9a-f]{20}$/.test(code)) throw new Error('Room code is invalid')
+  stage = 'joining second player'
   const guest = await newTab(debugPort, site)
   await guest.wait("document.querySelector('#game canvas') !== null", 30000)
   await guest.evaluate("document.querySelector('#roomCode').value = " + JSON.stringify(code))
   await guest.click('#joinRoom')
   await guest.wait("document.querySelector('#lobby').hidden === false", 30000)
   await host.wait("document.querySelectorAll('#players div').length === 2", 30000)
+  stage = 'synchronizing ready state'
   await guest.click('#ready')
   await host.wait("document.querySelector('#startRace').disabled === false", 30000)
+  stage = 'starting two-player race'
   await host.click('#startRace')
   await Promise.all([
     host.wait("document.querySelector('#menu').hidden === true", 10000),
@@ -128,6 +134,7 @@ async function main() {
   ])
   console.log('PASS: two players joined, ready state synced, and host started race')
 
+  stage = 'pairing phone'
   await host.click('#openMenu')
   await host.click('#pair')
   await host.wait("document.querySelector('#pairLink').href.includes('controller=')", 30000)
@@ -137,6 +144,7 @@ async function main() {
   await host.wait("document.querySelector('#pairStatus').textContent.includes('Điện thoại đã kết nối')", 30000)
   await host.wait("document.querySelector('#pairDialog').hidden === true", 5000)
 
+  stage = 'receiving phone throttle'
   const rect = await phone.evaluate("(() => { const r = document.querySelector('#phoneGas').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 } })()")
   await phone.call('Input.dispatchMouseEvent', { type: 'mousePressed', x: rect.x, y: rect.y, button: 'left', clickCount: 1 })
   await host.wait("Number(document.querySelector('#speed').textContent) > 10", 5000)
@@ -146,6 +154,12 @@ async function main() {
 }
 
 try { await main() }
+catch (error) {
+  const message = (stage + ': ' + error.message).replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A')
+  console.error('::error title=Browser smoke::' + message)
+  if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, 'Browser smoke failed at **' + stage + '**: ' + error.message + '\n')
+  throw error
+}
 finally {
   for (const tab of tabs) tab.close()
   browser?.kill()
