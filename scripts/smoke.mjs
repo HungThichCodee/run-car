@@ -1,5 +1,5 @@
 // Browser smoke test for the built Pages site. The online part uses the
-// project's public Supabase client variables and three real browser tabs.
+// project's public Supabase client variables and separate browser processes.
 import { spawn } from 'node:child_process'
 import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -11,8 +11,7 @@ const site = 'http://127.0.0.1:4175/' + repo + '/'
 const online = Boolean(process.env.VITE_SUPABASE_URL && process.env.VITE_SUPABASE_PUBLISHABLE_KEY)
 const browserBinary = [process.env.CHROME_BIN, '/usr/bin/chromium', '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable'].find(path => path && existsSync(path))
 if (!browserBinary) throw new Error('Chromium/Chrome is required for the smoke test')
-const profile = mkdtempSync(join(tmpdir(), 'run-car-smoke-'))
-let preview, browser, phoneBrowser, phoneProfile
+let preview, browser, guestBrowser, phoneBrowser, profile, guestProfile, phoneProfile
 const tabs = []
 let stage = 'starting browser'
 
@@ -72,6 +71,25 @@ async function newTab(debugPort, url) {
   return tab
 }
 
+async function launchBrowser(prefix) {
+  const profile = mkdtempSync(join(tmpdir(), prefix))
+  const browser = spawn(browserBinary, [
+    '--headless=new', '--no-sandbox', '--disable-dev-shm-usage', '--no-first-run',
+    '--enable-webgl', '--use-gl=angle', '--use-angle=swiftshader',
+    '--remote-debugging-port=0', '--user-data-dir=' + profile, 'about:blank'
+  ], { stdio: 'ignore' })
+  let debugPort
+  for (let i = 0; i < 80; i++) {
+    try {
+      debugPort = Number(readFileSync(join(profile, 'DevToolsActivePort'), 'utf8').split('\n')[0])
+      if (debugPort) break
+    } catch { /* Wait for Chrome. */ }
+    await pause(250)
+  }
+  if (!debugPort) { browser.kill(); rmSync(profile, { recursive: true, force: true }); throw new Error('Chrome DevTools did not start') }
+  return { browser, profile, debugPort }
+}
+
 async function main() {
   preview = spawn(process.execPath, ['node_modules/vite/bin/vite.js', 'preview', '--host', '127.0.0.1', '--port', '4175', '--strictPort'], {
     cwd: process.cwd(),
@@ -86,21 +104,9 @@ async function main() {
   }
   if (!ready) throw new Error('Vite preview did not start')
 
-  browser = spawn(browserBinary, [
-    '--headless=new', '--no-sandbox', '--disable-dev-shm-usage', '--no-first-run',
-    '--enable-webgl', '--use-gl=angle', '--use-angle=swiftshader',
-    '--remote-debugging-port=0', '--user-data-dir=' + profile, 'about:blank'
-  ], { stdio: 'ignore' })
-  let debugPort
-  for (let i = 0; i < 80; i++) {
-    try {
-      const raw = readFileSync(join(profile, 'DevToolsActivePort'), 'utf8')
-      debugPort = Number(raw.split('\n')[0])
-      if (debugPort) break
-    } catch { /* Wait for Chrome. */ }
-    await pause(250)
-  }
-  if (!debugPort) throw new Error('Chrome DevTools did not start')
+  const hostProcess = await launchBrowser('run-car-smoke-')
+  browser = hostProcess.browser; profile = hostProcess.profile
+  const debugPort = hostProcess.debugPort
   const host = await newTab(debugPort, site)
   stage = 'loading solo game'
   await host.wait("document.querySelector('#game canvas') !== null", 30000)
@@ -117,7 +123,9 @@ async function main() {
   const code = await host.evaluate("document.querySelector('#roomLabel').textContent")
   if (!/^[0-9a-f]{20}$/.test(code)) throw new Error('Room code is invalid')
   stage = 'joining second player'
-  const guest = await newTab(debugPort, site)
+  const guestProcess = await launchBrowser('run-car-guest-smoke-')
+  guestBrowser = guestProcess.browser; guestProfile = guestProcess.profile
+  const guest = await newTab(guestProcess.debugPort, site)
   await guest.wait("document.querySelector('#game canvas') !== null", 30000)
   await guest.evaluate("document.querySelector('#roomCode').value = " + JSON.stringify(code))
   await guest.click('#joinRoom')
@@ -150,24 +158,9 @@ async function main() {
   await host.click('#pair')
   await host.wait("document.querySelector('#pairLink').href.includes('controller=')", 30000)
   const link = await host.evaluate("document.querySelector('#pairLink').href")
-  // A second Chrome process keeps the desktop game's animation frame active
-  // while the phone is in front, matching two physical devices.
-  phoneProfile = mkdtempSync(join(tmpdir(), 'run-car-phone-smoke-'))
-  phoneBrowser = spawn(browserBinary, [
-    '--headless=new', '--no-sandbox', '--disable-dev-shm-usage', '--no-first-run',
-    '--enable-webgl', '--use-gl=angle', '--use-angle=swiftshader',
-    '--remote-debugging-port=0', '--user-data-dir=' + phoneProfile, 'about:blank'
-  ], { stdio: 'ignore' })
-  let phoneDebugPort
-  for (let i = 0; i < 80; i++) {
-    try {
-      phoneDebugPort = Number(readFileSync(join(phoneProfile, 'DevToolsActivePort'), 'utf8').split('\n')[0])
-      if (phoneDebugPort) break
-    } catch { /* Wait for phone Chrome. */ }
-    await pause(250)
-  }
-  if (!phoneDebugPort) throw new Error('Phone Chrome did not start')
-  const phone = await newTab(phoneDebugPort, link)
+  const phoneProcess = await launchBrowser('run-car-phone-smoke-')
+  phoneBrowser = phoneProcess.browser; phoneProfile = phoneProcess.profile
+  const phone = await newTab(phoneProcess.debugPort, link)
   await phone.wait("document.querySelector('#phoneStatus').textContent.includes('Đã ghép nối')", 30000)
   await host.wait("document.querySelector('#pairStatus').textContent.includes('Điện thoại đã kết nối')", 30000)
   await host.wait("document.querySelector('#pairDialog').hidden === true", 5000)
@@ -198,9 +191,11 @@ catch (error) {
 finally {
   for (const tab of tabs) tab.close()
   phoneBrowser?.kill()
+  guestBrowser?.kill()
   browser?.kill()
   preview?.kill()
   await pause(300)
-  rmSync(profile, { recursive: true, force: true })
+  if (profile) rmSync(profile, { recursive: true, force: true })
+  if (guestProfile) rmSync(guestProfile, { recursive: true, force: true })
   if (phoneProfile) rmSync(phoneProfile, { recursive: true, force: true })
 }

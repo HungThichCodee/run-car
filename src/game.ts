@@ -113,6 +113,10 @@ export class Game {
   }
   setTouch(control: Partial<Controls>) { this.touch = { ...this.touch, ...control } }
   setPhone(control: Controls | null) { this.phone = control }
+  snapshot(): CarState {
+    const p = this.body.translation(), q = this.body.rotation()
+    return { x: p.x, y: p.y, z: p.z, yaw: 2 * Math.atan2(q.y, q.w), speed: this.speed, lap: this.laps, t: performance.now() }
+  }
   startRace(gridSlot = -1) { this.gridSlot = gridSlot; this.laps = 0; this.checkpoint = 0; this.lastLapAngle = 0; this.lastProgress = 0; this.finished = false; this.startedAt = performance.now(); this.raceStarted = true; this.reset() }
   reset() {
     if (!this.body) return

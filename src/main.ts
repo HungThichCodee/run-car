@@ -57,7 +57,7 @@ function attachRoom(next: Room) {
   next.onPlayers = renderPlayers
   next.onStatus = message => { setConnection(message); toast(message) }
   next.onCar = state => { game?.setRemote(state); opponents.set(state.id, { name: state.name, progress: state.lap * Math.PI * 2 + progress(state.x, state.z), lastSeen: performance.now(), time: opponents.get(state.id)?.time }) }
-  next.onStart = () => { game?.startRace(next.players.findIndex(p => p.id === next.id)); raceFinished = false; showMenu(false); toast('Xuất phát! Đua 3 vòng.') }
+  next.onStart = () => { game?.startRace(next.players.findIndex(p => p.id === next.id)); if (game) next.sendCar(game.snapshot()); raceFinished = false; showMenu(false); toast('Xuất phát! Đua 3 vòng.') }
   next.onFinish = (id, t) => { const p = opponents.get(id); if (p) p.time = t; leaderboard(); toast((next.players.find(x => x.id === id)?.name || 'Người chơi') + ' đã về đích') }
 }
 async function enterRoom(host: boolean) {
@@ -158,7 +158,9 @@ async function setupGame() {
   bindHold(el('gas'), () => { touch.throttle = 1; update() }, () => { touch.throttle = 0; update() })
   bindHold(el('brake'), () => { touch.brake = 1; update() }, () => { touch.brake = 0; update() })
   bindHold(el('handbrake'), () => { touch.handbrake = true; update() }, () => { touch.handbrake = false; update() })
-  window.addEventListener('pagehide', () => { game?.dispose(); room?.leave(); pairing?.close() }, { once: true })
+  // Background tabs stop rendering, but their parked car must remain visible to others.
+  const carHeartbeat = window.setInterval(() => { if (room && game) room.sendCar(game.snapshot()) }, 500)
+  window.addEventListener('pagehide', () => { clearInterval(carHeartbeat); game?.dispose(); room?.leave(); pairing?.close() }, { once: true })
 }
 async function setupPhone(token: string) {
   el('game').hidden = true; el('menu').hidden = true; el('hud').hidden = true; el('leaderboard').hidden = true
