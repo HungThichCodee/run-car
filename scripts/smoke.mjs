@@ -12,7 +12,7 @@ const online = Boolean(process.env.VITE_SUPABASE_URL && process.env.VITE_SUPABAS
 const browserBinary = [process.env.CHROME_BIN, '/usr/bin/chromium', '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable'].find(path => path && existsSync(path))
 if (!browserBinary) throw new Error('Chromium/Chrome is required for the smoke test')
 const profile = mkdtempSync(join(tmpdir(), 'run-car-smoke-'))
-let preview, browser
+let preview, browser, phoneBrowser, phoneProfile
 const tabs = []
 let stage = 'starting browser'
 
@@ -135,19 +135,44 @@ async function main() {
   console.log('PASS: two players joined, ready state synced, and host started race')
 
   stage = 'pairing phone'
+  await host.call('Page.bringToFront')
   await host.click('#openMenu')
   await host.click('#pair')
   await host.wait("document.querySelector('#pairLink').href.includes('controller=')", 30000)
   const link = await host.evaluate("document.querySelector('#pairLink').href")
-  const phone = await newTab(debugPort, link)
+  // A second Chrome process keeps the desktop game's animation frame active
+  // while the phone is in front, matching two physical devices.
+  phoneProfile = mkdtempSync(join(tmpdir(), 'run-car-phone-smoke-'))
+  phoneBrowser = spawn(browserBinary, [
+    '--headless=new', '--no-sandbox', '--disable-dev-shm-usage', '--no-first-run',
+    '--enable-webgl', '--use-gl=angle', '--use-angle=swiftshader',
+    '--remote-debugging-port=0', '--user-data-dir=' + phoneProfile, 'about:blank'
+  ], { stdio: 'ignore' })
+  let phoneDebugPort
+  for (let i = 0; i < 80; i++) {
+    try {
+      phoneDebugPort = Number(readFileSync(join(phoneProfile, 'DevToolsActivePort'), 'utf8').split('\n')[0])
+      if (phoneDebugPort) break
+    } catch { /* Wait for phone Chrome. */ }
+    await pause(250)
+  }
+  if (!phoneDebugPort) throw new Error('Phone Chrome did not start')
+  const phone = await newTab(phoneDebugPort, link)
   await phone.wait("document.querySelector('#phoneStatus').textContent.includes('Đã ghép nối')", 30000)
   await host.wait("document.querySelector('#pairStatus').textContent.includes('Điện thoại đã kết nối')", 30000)
   await host.wait("document.querySelector('#pairDialog').hidden === true", 5000)
+  await host.call('Page.bringToFront')
 
   stage = 'receiving phone throttle'
   const rect = await phone.evaluate("(() => { const r = document.querySelector('#phoneGas').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 } })()")
   await phone.call('Input.dispatchMouseEvent', { type: 'mousePressed', x: rect.x, y: rect.y, button: 'left', clickCount: 1 })
-  await host.wait("Number(document.querySelector('#speed').textContent) > 10", 5000)
+  try { await host.wait("Number(document.querySelector('#speed').textContent) > 10", 5000) }
+  catch {
+    const speed = await host.evaluate("document.querySelector('#speed').textContent")
+    const hostStatus = await host.evaluate("document.querySelector('#pairStatus').textContent")
+    const phoneStatus = await phone.evaluate("document.querySelector('#phoneStatus').textContent")
+    throw new Error('Phone gas did not move host; speed=' + speed + ', host=' + hostStatus + ', phone=' + phoneStatus)
+  }
   await phone.call('Input.dispatchMouseEvent', { type: 'mouseReleased', x: rect.x, y: rect.y, button: 'left', clickCount: 1 })
   console.log('PASS: phone WebRTC channel controlled host car')
   if (host.exceptions.length || guest.exceptions.length || phone.exceptions.length) throw new Error('Browser exception during online test')
@@ -162,8 +187,10 @@ catch (error) {
 }
 finally {
   for (const tab of tabs) tab.close()
+  phoneBrowser?.kill()
   browser?.kill()
   preview?.kill()
   await pause(300)
   rmSync(profile, { recursive: true, force: true })
+  if (phoneProfile) rmSync(phoneProfile, { recursive: true, force: true })
 }
