@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/><meta name="theme-color" content="#0b1720"/><title>Run Car — Đua xe cùng bạn</title></head><body>
+<div id="app">
+  <div id="game" aria-label="Đường đua 3D"></div>
+  <header class="topbar"><div class="brand"><b>RUN<span>CAR</span></b><small>ARCADE RACING</small></div><div id="connection" class="pill">Chưa cấu hình multiplayer</div><button id="openMenu" class="iconButton" aria-label="Mở menu">☰</button></header>
+  <div id="hud" class="hud"><div class="speed"><strong id="speed">0</strong><span>KM/H</span></div><div class="raceStats"><span id="lap">Vòng 0/3</span><span id="timer">00:00.0</span><span id="checkpoint">Checkpoint 0/4</span></div></div>
+  <div id="leaderboard" class="leaderboard" hidden></div>
+  <div id="toast" role="status" class="toast" hidden></div>
+  <div class="touchControls"><div><button id="left" class="control round" aria-label="Rẽ trái">◀</button><button id="right" class="control round" aria-label="Rẽ phải">▶</button></div><div><button id="handbrake" class="control" aria-label="Phanh tay">DRIFT</button><button id="brake" class="control" aria-label="Phanh">PHANH</button><button id="gas" class="control primary" aria-label="Ga">GA</button></div></div>
+  <aside id="menu" class="panel">
+    <div class="panelHead"><div><small>VÀO ĐƯỜNG ĐUA</small><h1>Đua xe cùng bạn bè</h1></div><button id="closeMenu" class="iconButton" aria-label="Đóng menu">×</button></div>
+    <p>Đường đua 3 vòng với cọc tiêu, thùng chắn, rào chắn và vùng trơn. Lái bằng WASD / mũi tên, Space để drift, R để về đường.</p>
+    <div class="buttons"><button id="solo" class="primary">Chơi đơn</button><button id="pair">Kết nối điện thoại</button></div>
+    <div class="divider"></div>
+    <h2>Phòng riêng <span class="muted">tối đa 6 người</span></h2>
+    <label>Tên hiển thị<input id="name" maxlength="24" placeholder="Tay đua" value="Tay đua"></label>
+    <div class="buttons"><button id="createRoom">Tạo phòng</button><input id="roomCode" maxlength="24" placeholder="Mã phòng"><button id="joinRoom">Vào phòng</button></div>
+    <p id="multiHint" class="hint"></p>
+    <div id="lobby" hidden><h2>Phòng <span id="roomLabel"></span></h2><div id="players"></div><div class="buttons"><button id="ready">Sẵn sàng</button><button id="startRace" class="primary">Bắt đầu</button><button id="leaveRoom">Thoát phòng</button></div></div>
+    <div class="divider"></div><small>Chơi đơn vẫn chạy khi chưa cấu hình Supabase. Kết nối P2P có thể thất bại trên một số mạng.</small>
+  </aside>
+  <div id="pairDialog" class="overlay" hidden><div class="dialog"><button id="closePair" class="x" aria-label="Đóng">×</button><h2>Điện thoại làm vô lăng</h2><p>Quét QR bằng camera điện thoại. Mã có hiệu lực 2 phút và chỉ dùng một lần.</p><canvas id="qr"></canvas><p id="pairStatus"></p><small>Điện thoại và máy tính cần Internet; WebRTC có thể không kết nối qua NAT. Bàn phím và nút cảm ứng luôn dùng được.</small></div></div>
+  <div id="phonePage" hidden><div class="phoneHeader"><b>RUN<span>CAR</span></b><span id="phoneStatus">Đang ghép nối…</span></div><div class="phoneContent"><div class="wheel">◉<small>NGHIÊNG ĐỂ LÁI</small></div><button id="sensor" class="primary">Bật cảm biến nghiêng</button><button id="calibrate">Hiệu chỉnh tư thế thẳng</button><label>Độ nhạy <input id="sensitivity" type="range" min=".4" max="2.5" step=".1" value="1.2"></label><label>Dead zone <input id="deadzone" type="range" min="0" max="20" step="1" value="5"></label><label>Làm mượt <input id="smoothing" type="range" min=".05" max=".8" step=".05" value=".25"></label><p class="hint">Nếu cảm biến không có sẵn, dùng ◀ ▶ bên dưới.</p></div><div class="phonePads"><div><button id="phoneLeft" class="round">◀</button><button id="phoneRight" class="round">▶</button></div><div><button id="phoneDrift">DRIFT</button><button id="phoneBrake">PHANH</button><button id="phoneGas" class="primary">GA</button></div></div></div>
+</div><script type="module" src="/src/main.ts"></script></body></html>
