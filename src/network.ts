@@ -46,6 +46,7 @@ export class Room {
   private channel?: RealtimeChannel
   private peers = new Map<string, Peer>()
   private lastSend = 0
+  private lastBroadcast = 0
   private lastSeen = new Map<string, number>()
   private retryTimer = 0
   private raceEpoch = 0
@@ -65,6 +66,9 @@ export class Room {
     this.channel = this.client.channel('game:room:' + this.code, { config: { private: true, presence: { key: this.id }, broadcast: { self: false } } })
     this.channel.on('presence', { event: 'sync' }, () => this.sync())
     this.channel.on('broadcast', { event: 'signal' }, ({ payload }) => this.signal(payload as Signal))
+    this.channel.on('broadcast', { event: 'car' }, ({ payload }) => {
+      if (typeof payload?.id === 'string' && payload.id !== this.id) this.receiveCar(payload.id, payload.state)
+    })
     this.channel.on('broadcast', { event: 'start' }, ({ payload }) => {
       if (payload?.host !== this.hostId() || !Number.isFinite(payload?.startAt)) return
       const startAt = Number(payload.startAt)
@@ -149,12 +153,16 @@ export class Room {
       if (typeof event.data !== 'string' || event.data.length > 500) return
       try {
         const value = JSON.parse(event.data)
-        if (value.type !== 'car' || !validCar(value.state)) return
-        const player = this.players.find(p => p.id === id)
-        if (player) { this.lastSeen.set(id, Date.now()); this.onCar?.({ ...value.state, id, name: player.name, color: player.color }) }
+        if (value.type !== 'car') return
+        this.receiveCar(id, value.state)
       } catch { /* Ignore malformed peer traffic. */ }
     }
     channel.onopen = () => this.onStatus?.('P2P đã kết nối')
+  }
+  private receiveCar(id: string, state: unknown) {
+    if (!validCar(state)) return
+    const player = this.players.find(p => p.id === id)
+    if (player) { this.lastSeen.set(id, Date.now()); this.onCar?.({ ...state, id, name: player.name, color: player.color }) }
   }
   private async connect(id: string) {
     try {
@@ -189,15 +197,20 @@ export class Room {
     } catch (e) { this.onStatus?.('Lỗi kết nối P2P: ' + String(e)) }
   }
   sendCar(state: CarState) {
-    if (performance.now() - this.lastSend < 100) return
-    this.lastSend = performance.now()
+    const now = performance.now()
+    if (now - this.lastSend < 100) return
+    this.lastSend = now
     const packet = JSON.stringify({ type: 'car', state })
     for (const peer of this.peers.values()) if (peer.channel?.readyState === 'open' && peer.channel.bufferedAmount < 16000) peer.channel.send(packet)
+    if (this.channel && now - this.lastBroadcast >= (this.players.some(p => p.id !== this.id && this.peers.get(p.id)?.channel?.readyState !== 'open') ? 200 : 1000)) {
+      this.lastBroadcast = now
+      void this.channel.send({ type: 'broadcast', event: 'car', payload: { id: this.id, state } }).catch(() => {})
+    }
   }
   private checkPeers() {
     for (const p of this.players) if (p.id !== this.id && this.id < p.id) {
       const peer = this.peers.get(p.id)
-      if (!peer || peer.connection.connectionState === 'failed' || peer.connection.connectionState === 'closed') { this.drop(p.id); this.connect(p.id) }
+      if (!peer || ['failed', 'closed', 'disconnected'].includes(peer.connection.connectionState)) { this.drop(p.id); this.connect(p.id) }
     }
   }
   private drop(id: string) { this.peers.get(id)?.connection.close(); this.peers.delete(id); this.lastSeen.delete(id) }

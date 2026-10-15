@@ -132,7 +132,17 @@ async function main() {
     host.wait("document.querySelector('#menu').hidden === true", 10000),
     guest.wait("document.querySelector('#menu').hidden === true", 10000)
   ])
-  console.log('PASS: two players joined, ready state synced, and host started race')
+  stage = 'receiving both cars'
+  await Promise.all([
+    host.wait("document.querySelectorAll('#leaderboard [data-car=online]').length === 2", 10000),
+    guest.wait("document.querySelectorAll('#leaderboard [data-car=online]').length === 2", 10000)
+  ])
+  await pause(3500)
+  if (!await host.evaluate("document.querySelectorAll('#leaderboard [data-car=online]').length === 2") ||
+      !await guest.evaluate("document.querySelectorAll('#leaderboard [data-car=online]').length === 2")) {
+    throw new Error('A remote car stopped receiving position updates')
+  }
+  console.log('PASS: two players joined, started race, and see both cars')
 
   stage = 'pairing phone'
   await host.call('Page.bringToFront')

@@ -57,6 +57,7 @@ export class Game {
   private laps = 0
   private startedAt = 0
   private raceStarted = false
+  private gridSlot = -1
   private finished = false
   private status = 'Đang tải vật lý…'
   private slow = false
@@ -112,11 +113,13 @@ export class Game {
   }
   setTouch(control: Partial<Controls>) { this.touch = { ...this.touch, ...control } }
   setPhone(control: Controls | null) { this.phone = control }
-  startRace() { this.laps = 0; this.checkpoint = 0; this.lastLapAngle = 0; this.lastProgress = 0; this.finished = false; this.startedAt = performance.now(); this.raceStarted = true; this.reset() }
+  startRace(gridSlot = -1) { this.gridSlot = gridSlot; this.laps = 0; this.checkpoint = 0; this.lastLapAngle = 0; this.lastProgress = 0; this.finished = false; this.startedAt = performance.now(); this.raceStarted = true; this.reset() }
   reset() {
     if (!this.body) return
-    const p = point(this.lastLapAngle, 0)
-    const yaw = tangentAngle(this.lastLapAngle)
+    const onGrid = this.gridSlot >= 0 && this.lastLapAngle === 0
+    const angle = onGrid ? -Math.floor(this.gridSlot / 2) * .08 : this.lastLapAngle
+    const p = point(angle, onGrid ? (this.gridSlot % 2 === 0 ? -2.4 : 2.4) : 0)
+    const yaw = tangentAngle(angle)
     this.body.setTranslation({ x: p.x, y: p.y + .85, z: p.z }, true)
     this.body.setRotation({ x: 0, y: Math.sin(yaw / 2), z: 0, w: Math.cos(yaw / 2) }, true)
     this.body.setLinvel({ x: 0, y: 0, z: 0 }, true)

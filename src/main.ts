@@ -13,7 +13,7 @@ let room: Room | null = null
 let pairing: Pairing | null = null
 let raceFinished = false
 let localState: CarState | null = null
-const opponents = new Map<string, { name: string, progress: number, time?: number }>()
+const opponents = new Map<string, { name: string, progress: number, lastSeen: number, time?: number }>()
 let toastTimer = 0
 let lastLeaderboard = 0
 function toast(message: string) {
@@ -31,9 +31,9 @@ function leaderboard() {
   target.replaceChildren()
   if (!room || room.players.length < 2) { target.hidden = true; return }
   target.hidden = false
-  const values = room.players.map(p => ({ name: p.name, score: p.id === room?.id ? (localState ? localState.lap * Math.PI * 2 + progress(localState.x, localState.z) : 0) : (opponents.get(p.id)?.progress || 0), finish: opponents.get(p.id)?.time }))
+  const values = room.players.map(p => ({ name: p.name, active: p.id === room?.id || performance.now() - (opponents.get(p.id)?.lastSeen || 0) < 3000, score: p.id === room?.id ? (localState ? localState.lap * Math.PI * 2 + progress(localState.x, localState.z) : 0) : (opponents.get(p.id)?.progress || 0), finish: opponents.get(p.id)?.time }))
   values.sort((a, b) => (a.finish === undefined ? 1 : 0) - (b.finish === undefined ? 1 : 0) || b.score - a.score)
-  values.forEach((p, i) => { const div = document.createElement('div'); div.textContent = (i + 1) + '. ' + p.name + (p.finish === undefined ? '' : ' 🏁 ' + time(p.finish)); target.append(div) })
+  values.forEach((p, i) => { const div = document.createElement('div'); div.dataset.car = p.active ? 'online' : 'waiting'; div.textContent = (i + 1) + '. ' + p.name + (p.active ? ' 🚗' : ' · đang kết nối xe') + (p.finish === undefined ? '' : ' 🏁 ' + time(p.finish)); target.append(div) })
 }
 function renderPlayers(players: Player[]) {
   const list = el('players'); list.replaceChildren()
@@ -56,8 +56,8 @@ function attachRoom(next: Room) {
   room = next
   next.onPlayers = renderPlayers
   next.onStatus = message => { setConnection(message); toast(message) }
-  next.onCar = state => { game?.setRemote(state); opponents.set(state.id, { name: state.name, progress: state.lap * Math.PI * 2 + progress(state.x, state.z), time: opponents.get(state.id)?.time }) }
-  next.onStart = () => { game?.startRace(); raceFinished = false; showMenu(false); toast('Xuất phát! Đua 3 vòng.') }
+  next.onCar = state => { game?.setRemote(state); opponents.set(state.id, { name: state.name, progress: state.lap * Math.PI * 2 + progress(state.x, state.z), lastSeen: performance.now(), time: opponents.get(state.id)?.time }) }
+  next.onStart = () => { game?.startRace(next.players.findIndex(p => p.id === next.id)); raceFinished = false; showMenu(false); toast('Xuất phát! Đua 3 vòng.') }
   next.onFinish = (id, t) => { const p = opponents.get(id); if (p) p.time = t; leaderboard(); toast((next.players.find(x => x.id === id)?.name || 'Người chơi') + ' đã về đích') }
 }
 async function enterRoom(host: boolean) {
